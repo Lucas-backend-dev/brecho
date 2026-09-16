@@ -45,16 +45,15 @@ const produtoSchema = new mongoose.Schema(
         },
 
         // Imagem armazenada diretamente no MongoDB
+        // Agora é opcional
         imagem: {
-            type: Buffer,
-            required: true
+            type: Buffer
         },
 
         // Tipo MIME da imagem armazenada
+        // Agora é opcional
         imagemContentType: {
-            type: String,
-            required: true,
-            default: "image/webp"
+            type: String
         },
 
         // Mantido para compatibilidade com documentos antigos
