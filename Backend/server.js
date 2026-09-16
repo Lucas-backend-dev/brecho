@@ -1,15 +1,25 @@
 const express = require("express");
+
 const mongoose = require("mongoose");
+
 const cors = require("cors");
+
 const dotenv = require("dotenv");
 
+const multer = require("multer");
+
+const sharp = require("sharp");
+
 const Produto = require("./models/Produto");
+
 const Reserva = require("./models/Reserva");
+
 const Avaliacao = require("./models/Avaliacao");
 
 dotenv.config();
 
 const app = express();
+
 const PORT = process.env.PORT || 3000;
 
 // ==============================
@@ -17,7 +27,39 @@ const PORT = process.env.PORT || 3000;
 // ==============================
 
 app.use(cors());
+
 app.use(express.json());
+
+// ==============================
+// MULTER
+// ==============================
+
+const upload = multer({
+    storage: multer.memoryStorage(),
+
+    limits: {
+        fileSize: 10 * 1024 * 1024
+    },
+
+    fileFilter: (req, file, cb) => {
+        const tiposPermitidos = [
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/gif"
+        ];
+
+        if (!tiposPermitidos.includes(file.mimetype)) {
+            return cb(
+                new Error(
+                    "Formato de imagem não permitido. Use JPG, PNG, WEBP ou GIF."
+                )
+            );
+        }
+
+        cb(null, true);
+    }
+});
 
 // ==============================
 // CONEXÃO COM MONGODB
@@ -46,13 +88,46 @@ app.get("/", (req, res) => {
 // PRODUTOS
 // ==============================
 
-// Listar produtos
+// ==============================
+// FUNÇÃO PARA FORMATAR PRODUTO
+// ==============================
+
+function formatarProduto(produto) {
+    const produtoObj = produto.toObject();
+
+    // Não enviar o Buffer da imagem na resposta JSON
+    delete produtoObj.imagem;
+
+    delete produtoObj.imagemContentType;
+
+    // URL para o navegador buscar a imagem
+    produtoObj.imagem = `/api/produtos/${produto._id}/imagem`;
+
+    return produtoObj;
+}
+
+// ==============================
+// LISTAR PRODUTOS
+// ==============================
+
 app.get("/api/produtos", async (req, res) => {
     try {
-        const produtos = await Produto.find().sort({ createdAt: -1 });
-        res.json(produtos);
+        const produtos = await Produto.find()
+            .select("-imagem -imagemContentType")
+            .sort({ createdAt: -1 });
+
+        const produtosFormatados = produtos.map((produto) => {
+            const produtoObj = produto.toObject();
+
+            produtoObj.imagem = `/api/produtos/${produto._id}/imagem`;
+
+            return produtoObj;
+        });
+
+        res.json(produtosFormatados);
     } catch (erro) {
         console.error("ERRO AO BUSCAR PRODUTOS:", erro);
+
         res.status(500).json({
             mensagem: "Erro ao buscar produtos.",
             erro: erro.message
@@ -60,52 +135,194 @@ app.get("/api/produtos", async (req, res) => {
     }
 });
 
-// Criar produto
-app.post("/api/produtos", async (req, res) => {
+// ==============================
+// EXIBIR IMAGEM DO PRODUTO
+// ==============================
+
+app.get("/api/produtos/:id/imagem", async (req, res) => {
     try {
-        const produto = await Produto.create(req.body);
+        const produto = await Produto.findById(req.params.id)
+            .select("imagem imagemContentType");
 
-        res.status(201).json(produto);
-    } catch (erro) {
-        console.error("ERRO AO CRIAR PRODUTO:", erro);
-
-        res.status(400).json({
-            mensagem: "Erro ao criar produto.",
-            erro: erro.message
-        });
-    }
-});
-
-// Editar produto
-app.put("/api/produtos/:id", async (req, res) => {
-    try {
-        const produto = await Produto.findByIdAndUpdate(
-            req.params.id,
-            req.body,
-            {
-                new: true,
-                runValidators: true
-            }
-        );
-
-        if (!produto) {
+        if (!produto || !produto.imagem) {
             return res.status(404).json({
-                mensagem: "Produto não encontrado."
+                mensagem: "Imagem do produto não encontrada."
             });
         }
 
-        res.json(produto);
-    } catch (erro) {
-        console.error("ERRO AO EDITAR PRODUTO:", erro);
+        res.set("Content-Type", produto.imagemContentType);
 
-        res.status(400).json({
-            mensagem: "Erro ao editar produto.",
+        res.set("Cache-Control", "public, max-age=86400");
+
+        res.send(produto.imagem);
+    } catch (erro) {
+        console.error("ERRO AO BUSCAR IMAGEM:", erro);
+
+        res.status(500).json({
+            mensagem: "Erro ao buscar imagem.",
             erro: erro.message
         });
     }
 });
 
-// Excluir produto
+// ==============================
+// CRIAR PRODUTO
+// ==============================
+
+app.post(
+    "/api/produtos",
+    upload.single("imagem"),
+    async (req, res) => {
+        try {
+            // ==============================
+            // VERIFICAR IMAGEM
+            // ==============================
+
+            if (!req.file) {
+                return res.status(400).json({
+                    mensagem: "A imagem do produto é obrigatória."
+                });
+            }
+
+            // ==============================
+            // PROCESSAR IMAGEM COM SHARP
+            // ==============================
+
+            const imagemProcessada = await sharp(req.file.buffer)
+                .resize(1200, 1200, {
+                    fit: "inside",
+                    withoutEnlargement: true
+                })
+                .webp({
+                    quality: 82
+                })
+                .toBuffer();
+
+            // ==============================
+            // VERIFICAR TAMANHO FINAL
+            // ==============================
+
+            if (imagemProcessada.length > 12 * 1024 * 1024) {
+                return res.status(400).json({
+                    mensagem:
+                        "A imagem processada ficou muito grande para ser armazenada no MongoDB."
+                });
+            }
+
+            // ==============================
+            // CRIAR PRODUTO
+            // ==============================
+
+            const produto = await Produto.create({
+                ...req.body,
+
+                // A imagem vai DIRETAMENTE para o MongoDB
+                imagem: imagemProcessada,
+
+                imagemContentType: "image/webp",
+
+                imagemPublicId: ""
+            });
+
+            // ==============================
+            // RESPOSTA
+            // ==============================
+
+            res.status(201).json(formatarProduto(produto));
+        } catch (erro) {
+            console.error("ERRO AO CRIAR PRODUTO:", erro);
+
+            res.status(400).json({
+                mensagem: "Erro ao criar produto.",
+                erro: erro.message
+            });
+        }
+    }
+);
+
+// ==============================
+// EDITAR PRODUTO
+// ==============================
+
+app.put(
+    "/api/produtos/:id",
+    upload.single("imagem"),
+    async (req, res) => {
+        try {
+            const produto = await Produto.findById(req.params.id);
+
+            if (!produto) {
+                return res.status(404).json({
+                    mensagem: "Produto não encontrado."
+                });
+            }
+
+            // ==============================
+            // ATUALIZAR DADOS DO PRODUTO
+            // ==============================
+
+            const camposPermitidos = [
+                "codigo",
+                "nome",
+                "categoria",
+                "tamanho",
+                "estado",
+                "status",
+                "descricao",
+                "troca"
+            ];
+
+            camposPermitidos.forEach((campo) => {
+                if (req.body[campo] !== undefined) {
+                    produto[campo] = req.body[campo];
+                }
+            });
+
+            // ==============================
+            // SE NOVA IMAGEM FOI ENVIADA
+            // ==============================
+
+            if (req.file) {
+                const imagemProcessada = await sharp(req.file.buffer)
+                    .resize(1200, 1200, {
+                        fit: "inside",
+                        withoutEnlargement: true
+                    })
+                    .webp({
+                        quality: 82
+                    })
+                    .toBuffer();
+
+                if (imagemProcessada.length > 12 * 1024 * 1024) {
+                    return res.status(400).json({
+                        mensagem:
+                            "A imagem processada ficou muito grande para ser armazenada no MongoDB."
+                    });
+                }
+
+                produto.imagem = imagemProcessada;
+
+                produto.imagemContentType = "image/webp";
+            }
+
+            await produto.save();
+
+            res.json(formatarProduto(produto));
+        } catch (erro) {
+            console.error("ERRO AO EDITAR PRODUTO:", erro);
+
+            res.status(400).json({
+                mensagem: "Erro ao editar produto.",
+                erro: erro.message
+            });
+        }
+    }
+);
+
+// ==============================
+// EXCLUIR PRODUTO
+// ==============================
+
 app.delete("/api/produtos/:id", async (req, res) => {
     try {
         const produto = await Produto.findByIdAndDelete(req.params.id);
@@ -116,9 +333,12 @@ app.delete("/api/produtos/:id", async (req, res) => {
             });
         }
 
+        // A imagem está dentro do próprio documento MongoDB.
+        // Portanto, ao excluir o produto, a imagem também é excluída.
+
         res.json({
             mensagem: "Produto excluído com sucesso!",
-            produto
+            produto: formatarProduto(produto)
         });
     } catch (erro) {
         console.error("ERRO AO EXCLUIR PRODUTO:", erro);
@@ -135,6 +355,7 @@ app.delete("/api/produtos/:id", async (req, res) => {
 // ==============================
 
 // Listar reservas
+
 app.get("/api/reservas", async (req, res) => {
     try {
         const reservas = await Reserva.find().sort({ createdAt: -1 });
@@ -151,6 +372,7 @@ app.get("/api/reservas", async (req, res) => {
 });
 
 // Criar reserva
+
 app.post("/api/reservas", async (req, res) => {
     try {
         const reserva = await Reserva.create(req.body);
@@ -167,6 +389,7 @@ app.post("/api/reservas", async (req, res) => {
 });
 
 // Editar reserva
+
 app.put("/api/reservas/:id", async (req, res) => {
     try {
         const reserva = await Reserva.findByIdAndUpdate(
@@ -196,6 +419,7 @@ app.put("/api/reservas/:id", async (req, res) => {
 });
 
 // Excluir reserva/pedido
+
 app.delete("/api/reservas/:id", async (req, res) => {
     try {
         const reserva = await Reserva.findByIdAndDelete(req.params.id);
@@ -225,6 +449,7 @@ app.delete("/api/reservas/:id", async (req, res) => {
 // ==============================
 
 // Listar avaliações
+
 app.get("/api/avaliacoes", async (req, res) => {
     try {
         const avaliacoes = await Avaliacao.find().sort({ createdAt: -1 });
@@ -241,6 +466,7 @@ app.get("/api/avaliacoes", async (req, res) => {
 });
 
 // Criar avaliação
+
 app.post("/api/avaliacoes", async (req, res) => {
     try {
         const avaliacao = await Avaliacao.create(req.body);
@@ -254,6 +480,49 @@ app.post("/api/avaliacoes", async (req, res) => {
             erro: erro.message
         });
     }
+});
+
+// ==============================
+// TRATAMENTO DE ERROS DO MULTER
+// ==============================
+
+app.use((erro, req, res, next) => {
+    if (erro instanceof multer.MulterError) {
+        if (erro.code === "LIMIT_FILE_SIZE") {
+            return res.status(400).json({
+                mensagem: "A imagem não pode ter mais de 10 MB."
+            });
+        }
+
+        return res.status(400).json({
+            mensagem: "Erro no upload da imagem.",
+            erro: erro.message
+        });
+    }
+
+    // Erro de formato de arquivo
+    if (
+        erro.message &&
+        erro.message.includes("Formato de imagem não permitido")
+    ) {
+        return res.status(400).json({
+            mensagem: erro.message
+        });
+    }
+
+    next(erro);
+});
+
+// ==============================
+// TRATAMENTO GERAL DE ERROS
+// ==============================
+
+app.use((erro, req, res, next) => {
+    console.error("ERRO INTERNO DO SERVIDOR:", erro);
+
+    res.status(500).json({
+        mensagem: "Erro interno do servidor."
+    });
 });
 
 // ==============================
