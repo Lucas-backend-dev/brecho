@@ -97,7 +97,6 @@ function formatarProduto(produto) {
 
     // Não enviar o Buffer da imagem na resposta JSON
     delete produtoObj.imagem;
-
     delete produtoObj.imagemContentType;
 
     // URL para o navegador buscar a imagem
@@ -174,39 +173,33 @@ app.post(
     upload.single("imagem"),
     async (req, res) => {
         try {
-            // ==============================
-            // VERIFICAR IMAGEM
-            // ==============================
-
-            if (!req.file) {
-                return res.status(400).json({
-                    mensagem: "A imagem do produto é obrigatória."
-                });
-            }
+            let imagemProcessada = null;
 
             // ==============================
-            // PROCESSAR IMAGEM COM SHARP
+            // PROCESSAR IMAGEM SE FOI ENVIADA
             // ==============================
 
-            const imagemProcessada = await sharp(req.file.buffer)
-                .resize(1200, 1200, {
-                    fit: "inside",
-                    withoutEnlargement: true
-                })
-                .webp({
-                    quality: 82
-                })
-                .toBuffer();
+            if (req.file) {
+                imagemProcessada = await sharp(req.file.buffer)
+                    .resize(1200, 1200, {
+                        fit: "inside",
+                        withoutEnlargement: true
+                    })
+                    .webp({
+                        quality: 82
+                    })
+                    .toBuffer();
 
-            // ==============================
-            // VERIFICAR TAMANHO FINAL
-            // ==============================
+                // ==============================
+                // VERIFICAR TAMANHO FINAL
+                // ==============================
 
-            if (imagemProcessada.length > 12 * 1024 * 1024) {
-                return res.status(400).json({
-                    mensagem:
-                        "A imagem processada ficou muito grande para ser armazenada no MongoDB."
-                });
+                if (imagemProcessada.length > 12 * 1024 * 1024) {
+                    return res.status(400).json({
+                        mensagem:
+                            "A imagem processada ficou muito grande para ser armazenada no MongoDB."
+                    });
+                }
             }
 
             // ==============================
@@ -217,10 +210,11 @@ app.post(
                 ...req.body,
 
                 // A imagem vai DIRETAMENTE para o MongoDB
+                // Se não tiver imagem, fica null
                 imagem: imagemProcessada,
-
-                imagemContentType: "image/webp",
-
+                imagemContentType: imagemProcessada
+                    ? "image/webp"
+                    : null,
                 imagemPublicId: ""
             });
 
@@ -501,6 +495,7 @@ app.use((erro, req, res, next) => {
     }
 
     // Erro de formato de arquivo
+
     if (
         erro.message &&
         erro.message.includes("Formato de imagem não permitido")
