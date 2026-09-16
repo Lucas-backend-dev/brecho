@@ -1,4 +1,4 @@
-const API_URL = "http://localhost:3000/api";
+const API_URL = "https://brecho-api-zebo.onrender.com/api";
 // ========================================
 // ESTADO DO SITE
 // ========================================
